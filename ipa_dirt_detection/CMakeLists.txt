@@ -147,3 +147,9 @@ install(DIRECTORY common/files
 	DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/common
 	PATTERN ".svn" EXCLUDE
 )
+
+########################################
+## Use macro s.t. QT knows every file ##
+########################################
+file(GLOB_RECURSE EXTRA_FILES */*)
+add_custom_target(${PROJECT_NAME}_OTHER_FILES ALL WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} SOURCES ${EXTRA_FILES})

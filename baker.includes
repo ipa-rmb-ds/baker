@@ -1,0 +1,4 @@
+ipa_dirt_detection/common/include/ipa_dirt_detection
+ipa_dirt_detection/ros/include/ipa_dirt_detection
+ipa_dirt_detection/ros/include/ipa_dirt_detection/obsolete
+baker_msgs/msg

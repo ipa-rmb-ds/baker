@@ -4,8 +4,10 @@ project(baker_msgs)
 set(catkin_RUN_PACKAGES
 	actionlib
 	actionlib_msgs
+        geometry_msgs
 	sensor_msgs
 	std_msgs
+        std_srvs
 )
 
 set(catkin_BUILD_PACKAGES
@@ -39,6 +41,8 @@ add_message_files(
 	FILES 
 		RotatedRect.msg
 		CleanPatternParams.msg
+                DirtBoundingBox.msg
+                DirtBoundingBoxArray.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -54,8 +58,10 @@ add_service_files(
 generate_messages(
 	DEPENDENCIES
 		actionlib_msgs
+                geometry_msgs
 		sensor_msgs
 		std_msgs
+                std_srvs
 )
 
 ###################################

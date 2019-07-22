@@ -1,8 +1,6 @@
-#include "ipa_dirt_detection/dirt_detection_server_preprocessing.h"
+﻿#include "ipa_dirt_detection/dirt_detection_server_preprocessing.h"
 #include "ipa_dirt_detection/timer.h"
 
-#include <cob_object_detection_msgs/Detection.h>
-#include <cob_object_detection_msgs/DetectionArray.h>
 #include <limits>
 #include <Eigen/Geometry>
 
@@ -203,7 +201,7 @@ void IpaDirtDetectionPreprocessing::ClientPreprocessing::preprocessingCallback(c
 	{
 		Timer tim2;
 
-		// nb_detect_scales == 1 (always, throws an error otherwise)
+		// nb_detect_scales == 1 (always, throws an error otherwise)
 		image_scaling_ = number_detect_scales_ == 1 ? 1 : pow(2, s)*bird_eye_start_resolution_ / bird_eye_base_resolution_;
 		bird_eye_resolution_ = number_detect_scales_ == 1 ? bird_eye_base_resolution_ : pow(2, s)*bird_eye_start_resolution_;
 
@@ -284,16 +282,15 @@ void IpaDirtDetectionPreprocessing::ClientPreprocessing::preprocessingCallback(c
 //		std::cout << "=======================================================" << std::endl;
 //		std::cout << "Received RESULT from server.\n" << std::endl;
 		const size_t nb_detections = dirt_detection_client_.getResult()->dirt_detections.size();
-		std::cout << "Number detections: " << nb_detections << std::endl;
+		std::cout << "Number detections: " << nb_detections << std::endl;
 
 
-		cob_object_detection_msgs::DetectionArray detected_dirts_to_publish;
+		baker_msgs::DirtBoundingBoxArray detected_dirts_to_publish;
 		detected_dirts_to_publish.header = point_cloud2_rgb_msg->header;
 
 		const cv::Mat H_inv = H.inv();
 		for (size_t i = 0; i < nb_detections; ++i) //rescale, find coordinates for, and publish all dirts detected
 		{
-			// todo: rescale dirt detections with 1./image_scaling_
 			const baker_msgs::RotatedRect& detection = dirt_detection_client_.getResult()->dirt_detections[i];
 			const cv::Rect dirt_warped = cv::RotatedRect(cv::Point2f(detection.center_x*1./image_scaling_, detection.center_y*1./image_scaling_),
 					cv::Size2f(detection.width*1./image_scaling_, detection.height*1./image_scaling_), detection.angle).boundingRect();
@@ -308,10 +305,15 @@ void IpaDirtDetectionPreprocessing::ClientPreprocessing::preprocessingCallback(c
 			Eigen::Vector3f minPoint(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
 			unsigned int nb_points = 0;
 
+			//compute every point that is valid and transform it back in point cloud
+			pcl::PointCloud<pcl::PointXYZRGB>::Ptr bounding_box_pcl(new pcl::PointCloud<pcl::PointXYZRGB>());
 			for (int v = min_v; v <= max_v; ++v)
 			{
 				for (int u = min_u; u <= max_u; ++u)
 				{
+					if(plane_mask_warped.at<uchar>(v, u) != 255) // check if point is valid. means in plane and not part of e.g. wall. valid is 255.
+						continue;
+
 					cv::Mat point_original_image = (cv::Mat_<double>(3, 1) << u, v, 1.0);
 					if (is_warp_image_bird_perspective_enabled_)
 					{
@@ -321,26 +323,56 @@ void IpaDirtDetectionPreprocessing::ClientPreprocessing::preprocessingCallback(c
 					}
 					const int u_pcl = point_original_image.at<double>(0,0);
 					const int v_pcl = point_original_image.at<double>(1,0);
-					if (u_pcl >= 0 && u_pcl<input_cloud->width && v_pcl >= 0 && v_pcl<input_cloud->height)
+
+					if ( (u_pcl >= 0 && u_pcl<input_cloud->width) && (v_pcl >= 0 && v_pcl<input_cloud->height) ) // check if point is within image
 					{
 						pcl::PointXYZRGB& point = (*input_cloud)[v_pcl*input_cloud->width + u_pcl];
 						if (!(point.x == point.x && point.y == point.y && point.z == point.z))	// check for NaN values
 							continue;
 
-						minPoint.x() = std::min(point.x, minPoint.x());
-						minPoint.y() = std::min(point.y, minPoint.y());
-						minPoint.z() = std::min(point.z, minPoint.z());
-						maxPoint.x() = std::max(point.x, maxPoint.x());
-						maxPoint.y() = std::max(point.y, maxPoint.y());
-						maxPoint.z() = std::max(point.z, maxPoint.z());
-
-						centroid.x() += point.x;
-						centroid.y() += point.y;
-						centroid.z() += point.z;
+						//for each detection safe only valid points in point cloud.
+						bounding_box_pcl->points.push_back(point);
 						nb_points++;
 					}
 				}
 			}
+
+			pcl::PointCloud<pcl::PointXYZ>::Ptr bounding_box_pcl_colorless(new pcl::PointCloud<pcl::PointXYZ>());
+			pcl::copyPointCloud(*bounding_box_pcl, *bounding_box_pcl_colorless);
+
+			//compute bounding box of point cloud with valid points
+			// Compute principal directions
+			Eigen::Vector4f pcaCentroid;
+			pcl::compute3DCentroid(*bounding_box_pcl_colorless, pcaCentroid);
+			Eigen::Matrix3f covariance;
+			computeCovarianceMatrixNormalized(*bounding_box_pcl_colorless, pcaCentroid, covariance);
+			Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eigen_solver(covariance, Eigen::ComputeEigenvectors);
+			Eigen::Matrix3f eigenVectorsPCA = eigen_solver.eigenvectors();
+			eigenVectorsPCA.col(2) = eigenVectorsPCA.col(0).cross(eigenVectorsPCA.col(1));  /// This line is necessary for proper orientation in some cases. The numbers come out the same without it, but
+																							///    the signs are different and the box doesn't get correctly oriented in some cases.
+
+			// Transform the original cloud to the origin where the principal components correspond to the axes.
+			Eigen::Matrix4f projectionTransform(Eigen::Matrix4f::Identity());
+			projectionTransform.block<3,3>(0,0) = eigenVectorsPCA.transpose();
+			projectionTransform.block<3,1>(0,3) = -1.f * (projectionTransform.block<3,3>(0,0) * pcaCentroid.head<3>());
+
+			pcl::PointCloud<pcl::PointXYZ>::Ptr cloudPointsProjected (new pcl::PointCloud<pcl::PointXYZ>);
+			pcl::transformPointCloud(*bounding_box_pcl_colorless, *cloudPointsProjected, projectionTransform);
+			// Get the minimum and maximum points of the transformed cloud.
+			pcl::PointXYZ min_point_bounding_box, max_point_bounding_box;
+			pcl::getMinMax3D(*cloudPointsProjected, min_point_bounding_box, max_point_bounding_box);
+//			const Eigen::Vector3f meanDiagonal = 0.5f*(max_point_bounding_box.getVector3fMap() + min_point_bounding_box.getVector3fMap());
+
+//			// Final transform
+//			const Eigen::Quaternionf bboxQuaternion(eigenVectorsPCA);
+//			const Eigen::Vector3f bboxTransform = eigenVectorsPCA * meanDiagonal + pcaCentroid.head<3>();
+
+			//get 4 corner points with z=0. then translate and rotate points back in origin point cloud
+			Eigen::Vector3f corner_1 = eigenVectorsPCA*Eigen::Vector3f(min_point_bounding_box.x, min_point_bounding_box.y, min_point_bounding_box.z) + pcaCentroid.head<3>();
+			Eigen::Vector3f corner_2 = eigenVectorsPCA*Eigen::Vector3f(min_point_bounding_box.x, max_point_bounding_box.y, max_point_bounding_box.z) + pcaCentroid.head<3>();
+			Eigen::Vector3f corner_3 = eigenVectorsPCA*Eigen::Vector3f(max_point_bounding_box.x, max_point_bounding_box.y, max_point_bounding_box.z) + pcaCentroid.head<3>();
+			Eigen::Vector3f corner_4 = eigenVectorsPCA*Eigen::Vector3f(max_point_bounding_box.x, min_point_bounding_box.y, max_point_bounding_box.z) + pcaCentroid.head<3>();
+
 
 			if (nb_points == 0) {
 				// todo rmb-ma
@@ -352,21 +384,31 @@ void IpaDirtDetectionPreprocessing::ClientPreprocessing::preprocessingCallback(c
 			centroid.y() /= nb_points;
 			centroid.z() /= nb_points;
 
+			//set up msg to publish the dirt that was found.
 			cob_object_detection_msgs::Detection detection_msg;
-			detection_msg.header = point_cloud2_rgb_msg->header;
+			baker_msgs::DirtBoundingBox bounding_box_msgs;
+			bounding_box_msgs.header = point_cloud2_rgb_msg->header;
 			// todo warning frame_id (just for simulation)
-//			detection_msg.pose.header.frame_id = "camera1_optical_frame";
-//			detection_msg.header.frame_id = "camera1_optical_frame";
-			detection_msg.label = "dirt_spots_found";
-			detection_msg.pose.header = point_cloud2_rgb_msg->header;
-			detection_msg.pose.pose.position.x = centroid.x();
-			detection_msg.pose.pose.position.y = centroid.y();
-			detection_msg.pose.pose.position.z = centroid.z();
-			detection_msg.bounding_box_lwh.x = maxPoint.x() - minPoint.x();
-			detection_msg.bounding_box_lwh.y = maxPoint.y() - minPoint.y();
-			detection_msg.bounding_box_lwh.z = maxPoint.z() - minPoint.z();
+//			bounding_box_msgs.header.frame_id = "camera1_optical_frame";
+			bounding_box_msgs.label = "dirt_spots_found";
+			bounding_box_msgs.corner_1.x = corner_1[0];
+			bounding_box_msgs.corner_1.y = corner_1[1];
+			bounding_box_msgs.corner_1.z = corner_1[2];
 
-			detected_dirts_to_publish.detections.push_back(detection_msg);
+			bounding_box_msgs.corner_2.x = corner_2[0];
+			bounding_box_msgs.corner_2.y = corner_2[1];
+			bounding_box_msgs.corner_2.z = corner_2[2];
+
+			bounding_box_msgs.corner_3.x = corner_3[0];
+			bounding_box_msgs.corner_3.y = corner_3[1];
+			bounding_box_msgs.corner_3.z = corner_3[2];
+
+			bounding_box_msgs.corner_4.x = corner_4[0];
+			bounding_box_msgs.corner_4.y = corner_4[1];
+			bounding_box_msgs.corner_4.z = corner_4[2];
+
+
+			detected_dirts_to_publish.array_of_bounding_boxes.push_back(bounding_box_msgs);
 		}
 		//todo: publish coordinates and rects
 		dirt_detected_.publish(detected_dirts_to_publish);

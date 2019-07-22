@@ -13,6 +13,10 @@
 //MESSAGES
 #include <baker_msgs/DirtDetectionAction.h>
 #include <baker_msgs/RotatedRect.h>
+#include <baker_msgs/DirtBoundingBox.h>
+#include <baker_msgs/DirtBoundingBoxArray.h>
+#include <cob_object_detection_msgs/Detection.h>
+#include <cob_object_detection_msgs/DetectionArray.h>
 #include <actionlib/client/simple_action_client.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_srvs/Trigger.h>
@@ -45,6 +49,13 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_ros/point_cloud.h>
+#include <pcl/common/transforms.h>
+#include <pcl/common/common.h>
+
+//EIGEN
+//#include <Eigen/Dense>
+//#include <Eigen/Core>
+//#include <Eigen/StdVector>
 
 //TIMER
 #include <time.h>
